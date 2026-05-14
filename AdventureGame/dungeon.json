@@ -1,1 +1,10 @@
 
+
+{
+  "adventurerStart": { "row": 7, "col": 0 },
+  "exit": { "row": 0, "col": 7 },
+  "grueStart": { "row": 0, "col": 0 },
+  "lamp": { "row": 7, "col": 4 },
+  "key": { "row": 0, "col": 4 },
+  "chest": { "row": 4, "col": 4 }
+}
