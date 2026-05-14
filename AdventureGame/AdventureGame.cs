@@ -1,313 +1,158 @@
+using System;
+using System.IO;
+using System.Text.Json;
+
 namespace AdventureGame;
 
-public class AdventureGame
-{
-	public readonly string GO_NORTH = "W";
-	public readonly string GO_SOUTH = "S";
-	public readonly string GO_EAST = "D";
-	public readonly string GO_WEST = "A";
-	public readonly string GET_LAMP = "L";
-	public readonly string GET_KEY = "K";
-	public readonly string OPEN_CHEST = "O";
-	public readonly string QUIT = "Q";
+public class Coord { public int row { get; set; } = 0; public int col { get; set; } = 0; }
+public class DungeonData {
+    public Coord adventurerStart { get; set; } = new();
+    public Coord exit { get; set; } = new();
+    public Coord grueStart { get; set; } = new();
+    public Coord lamp { get; set; } = new();
+    public Coord key { get; set; } = new();
+    public Coord chest { get; set; } = new();
+}
 
-	private Adventurer adventurer;
-	private Room[,] dungeon;
-	private int aRow;
-	private int aCol;
-	private bool isChestOpen;
-	private bool hasPlayerQuit;
-	private bool isAdventureAlive;
-	private string lastDirection;
+public class AdventureGame {
+    private Adventurer adventurer = new();
+    private Room[,] dungeon = new Room[8, 8];
+    private int aRow, aCol, gRow, gCol, eRow, eCol;
+    private bool isChestOpen, isAdventureAlive, hasReachedExit, hasQuit;
+    private string gameLog = "";
 
-	public AdventureGame()
-	{
+    public void Start() {
+        do {
+            Init();
+            while (isAdventureAlive && !hasReachedExit && !hasQuit) {
+                Console.Clear();
+                DrawMap();
+                Console.WriteLine($"\nLOG: {gameLog}");
+                Console.WriteLine($"INV: {(adventurer.HasKey() ? "[Llave] " : "")}{(adventurer.HasLamp() ? "[Lámpara]" : "")}");
+                Console.Write("\n(WASD) Mover, (K) Tomar Llave, (L) Tomar Lámpara, (O) Abrir, (Q) Salir: ");
+                
+                string input = Console.ReadLine()?.ToUpper() ?? "";
+                if (input == "Q") { hasQuit = true; break; }
+                
+                ProcessInput(input);
+                UpdateGrue(); 
+                
+                if (isChestOpen && aRow == eRow && aCol == eCol) hasReachedExit = true;
+                if (aRow == gRow && aCol == gCol) { isAdventureAlive = false; gameLog = "¡El Grue te atrapó en la oscuridad!"; }
+            }
+            FinalizeGame();
+        } while (RetryMenu());
+    }
 
-	}
+    private void Init() {
+        adventurer = new Adventurer();
+        for (int r = 0; r < 8; r++) {
+            for (int c = 0; c < 8; c++) {
+                dungeon[r, c] = new Room();
+                bool isPath = (r == 0 || r == 7 || c == 0 || c == 7 || r == 4 || c == 4);
+                dungeon[r, c].SetDescription(isPath ? "Pasillo" : "Pared");
+            }
+        }
+        LoadDungeonConfig("dungeon.json");
+        isChestOpen = false; isAdventureAlive = true; hasReachedExit = false;
+        gameLog = "Está muy oscuro... Busca la Lámpara [L]";
+    }
 
-	public void Start()
-	{
-		Init();
+    private void LoadDungeonConfig(string path) {
+        if (File.Exists(path)) {
+            var data = JsonSerializer.Deserialize<DungeonData>(File.ReadAllText(path));
+            if (data != null) {
+                aRow = data.adventurerStart.row; aCol = data.adventurerStart.col;
+                gRow = data.grueStart.row; gCol = data.grueStart.col;
+                eRow = data.exit.row; eCol = data.exit.col;
+                dungeon[data.key.row, data.key.col].SetKey(true);
+                dungeon[data.key.row, data.key.col].SetDescription("Pasillo");
+                dungeon[data.lamp.row, data.lamp.col].SetLamp(true);
+                dungeon[data.lamp.row, data.lamp.col].SetDescription("Pasillo");
+                dungeon[data.chest.row, data.chest.col].SetChest(true);
+                dungeon[data.chest.row, data.chest.col].SetDescription("Pasillo");
+            }
+        }
+    }
 
-		ShowGameStartScreen();
+    private void DrawMap() {
+        Console.WriteLine("╔════════════════════════╗");
+        for (int r = 0; r < 8; r++) {
+            Console.Write("║ ");
+            for (int c = 0; c < 8; c++) {
+                if (r == aRow && c == aCol) Console.Write(" P ");
+                else if (isChestOpen && r == gRow && c == gCol) Console.Write(" G ");
+                else if (!adventurer.HasLamp()) {
+                    if (dungeon[r, c].HasLamp()) Console.Write(" L ");
+                    else Console.Write("   "); // Niebla de guerra
+                }
+                else {
+                    if (r == eRow && c == eCol) Console.Write(" E ");
+                    else if (dungeon[r, c].HasKey()) Console.Write(" K ");
+                    else if (dungeon[r, c].HasChest() && !isChestOpen) Console.Write(" C ");
+                    else if (dungeon[r, c].GetDescription() == "Pared") Console.Write("###");
+                    else Console.Write(" . ");
+                }
+            }
+            Console.WriteLine(" ║");
+        }
+        Console.WriteLine("╚════════════════════════╝");
+    }
 
-		string input;
+    private void ProcessInput(string input) {
+        int nR = aRow, nC = aCol;
+        if (input == "W") nR--; else if (input == "S") nR++; else if (input == "A") nC--; else if (input == "D") nC++;
 
-		do
-		{
-			ShowScene();
+        if (input == "K" && dungeon[aRow, aCol].HasKey()) {
+            adventurer.SetKey(true); dungeon[aRow, aCol].SetKey(false);
+            gameLog = "¡Tienes la LLAVE!"; return;
+        }
+        if (input == "L" && dungeon[aRow, aCol].HasLamp()) {
+            adventurer.SetLamp(true); dungeon[aRow, aCol].SetLamp(false);
+            gameLog = "¡Luz activada! Ahora busca el cofre."; return;
+        }
+        if (input == "O" && dungeon[aRow, aCol].HasChest()) {
+            if (adventurer.HasKey()) { 
+                isChestOpen = true; gameLog = "¡ABIERTO! ¡CORRE A LA SALIDA [E]!"; 
+            } else { 
+                gameLog = "¡NECESITAS LA LLAVE [K]!"; 
+            }
+            return;
+        }
 
-			do
-			{
-				ShowInputOptions();
+        if (nR >= 0 && nR < 8 && nC >= 0 && nC < 8 && dungeon[nR, nC].GetDescription() == "Pasillo") {
+            aRow = nR; aCol = nC;
+            if (!adventurer.HasLamp() && (aRow > 0 && aRow < 7 && aCol > 0 && aCol < 7)) {
+                isAdventureAlive = false; gameLog = "Te perdiste en las sombras...";
+            }
+        }
+    }
 
-				input = GetInput();
-			}
-			while(!IsValidInput(input));
+    private void UpdateGrue() {
+        if (!isChestOpen) return;
+        int dR = aRow - gRow, dC = aCol - gCol;
+        if (Math.Abs(dR) >= Math.Abs(dC)) { if (!TryM(dR, 0)) TryM(0, dC); }
+        else { if (!TryM(0, dC)) TryM(dR, 0); }
+    }
 
-			ProcessInput(input);
+    private bool TryM(int dR, int dC) {
+        int nR = gRow + (dR == 0 ? 0 : dR > 0 ? 1 : -1);
+        int nC = gCol + (dC == 0 ? 0 : dC > 0 ? 1 : -1);
+        if (nR >= 0 && nR < 8 && nC >= 0 && nC < 8 && dungeon[nR, nC].GetDescription() == "Pasillo") {
+            gRow = nR; gCol = nC; return true;
+        }
+        return false;
+    }
 
-			UpdateGameState();
-		}
-		while(!IsGameOver());
+    private void FinalizeGame() {
+        Console.Clear(); DrawMap();
+        if (hasReachedExit) Console.WriteLine("\n¡VICTORIA! Escapaste.");
+        else Console.WriteLine($"\nPERDISTE: {gameLog}");
+    }
 
-		ShowGameOverScreen();
-	}
-
-	private void Init()
-	{
-		adventurer = new Adventurer();
-
-		Room r1 = new Room();
-		r1.SetLit(true);
-		r1.SetDescription("Room 1");
-		r1.SetSouth(true);
-		r1.SetEast(true);
-		r1.SetLamp(true);
-		r1.SetKey(true);
-
-		Room r2 = new Room();
-		r2.SetDescription("Room 2");
-		r2.SetSouth(true);
-		r2.SetWest(true);
-
-		Room r3 = new Room();
-		r3.SetLit(true);
-		r3.SetDescription("Room 3");
-		r3.SetNorth(true);
-		r3.SetEast(true);
-		r3.SetChest(true);
-
-
-		Room r4 = new Room();
-		r4.SetDescription("Room 4");
-		r4.SetNorth(true);
-		r4.SetWest(true);
-
-		dungeon = new Room[,]
-		{
-			{ r1, r2 },
-			{ r3, r4 }
-		};
-
-		aRow = 1;
-		aCol = 0;
-
-		isChestOpen = false;
-		hasPlayerQuit = false;
-		isAdventureAlive = true;
-
-		lastDirection = string.Empty;
-	}
-
-	private void ShowGameStartScreen()
-	{
-		Console.WriteLine("Welcome to Adventure Game!");
-	}
-
-	private void ShowScene()
-	{
-		var r = dungeon[aRow, aCol];
-
-		if(adventurer.HasLamp() || r.IsLit())
-		{
-			Console.WriteLine(r.GetDescription());
-		}
-		else
-		{
-			Console.WriteLine("This room is pitch black!");
-		}
-	}
-
-	private void ShowInputOptions()
-	{
-		string options = ""
-		+ $"GO NORTH [{GO_NORTH}] | GO EAST [{GO_EAST}] | GET LAMP [{GET_LAMP}] | OPEN CHEST [{OPEN_CHEST}]\n"
-		+ $"GO SOUTH [{GO_SOUTH}] | GO WEST [{GO_WEST}] | GET KEY  [{GET_KEY}] | QUIT       [{QUIT}]\n"
-		+ $"> ";
-
-		Console.Write(options);
-	}
-
-	private string GetInput()
-	{
-		return Console.ReadLine()!.ToUpper();
-	}
-
-	private bool IsValidInput(string input)
-	{
-		string[] validInputs = { GO_NORTH, GO_SOUTH, GO_EAST, GO_WEST, GET_LAMP, GET_KEY, OPEN_CHEST, QUIT };
-
-		if(!validInputs.Contains(input))
-		{
-			Console.WriteLine("ERROR: Invalid input. Please try again.");
-			return false;
-		}
-
-		return true;
-	}
-
-	private void ProcessInput(string input)
-	{
-		Room r = dungeon[aRow, aCol];
-
-		if(!adventurer.HasLamp() && !r.IsLit() && input != lastDirection)
-		{
-			Console.WriteLine("You got eaten alive by the Grue!");
-			isAdventureAlive = false;
-		}
-		else if(input == GO_NORTH)
-		{
-			GoNorth(r);
-		}
-		else if(input == GO_SOUTH)
-		{
-			GoSouth(r);
-		}
-		else if(input == GO_EAST)
-		{
-			GoEast(r);
-		}
-		else if(input == GO_WEST)
-		{
-			GoWest(r);
-		}
-		else if(input == GET_LAMP)
-		{
-			GetLamp(r);
-		}
-		else if(input == GET_KEY)
-		{
-			GetKey(r);
-		}
-		else if(input == OPEN_CHEST)
-		{
-			OpenChest(r);
-		}
-		else// if(input == QUIT)
-		{
-			Quit();
-		}
-	}
-
-	private void UpdateGameState()
-	{
-
-	}
-
-	private bool IsGameOver()
-	{
-		return isChestOpen || hasPlayerQuit || !isAdventureAlive;
-	}
-
-	private void ShowGameOverScreen()
-	{
-		Console.WriteLine("Game Over!");
-	}
-
-	private void GoNorth(Room r)
-	{
-		if(r.HasNorth())
-		{
-			aRow -= 1;
-			lastDirection = GO_SOUTH;
-		}
-		else
-		{
-			Console.WriteLine("You cannot go north!\a");
-		}
-	}
-
-	private void GoSouth(Room r)
-	{
-		if(r.HasSouth())
-		{
-			aRow += 1;
-			lastDirection = GO_NORTH;
-		}
-		else
-		{
-			Console.WriteLine("You cannot go south!\a");
-		}
-	}
-
-	private void GoEast(Room r)
-	{
-		if(r.HasEast())
-		{
-			aCol += 1;
-			lastDirection = GO_WEST;
-		}
-		else
-		{
-			Console.WriteLine("You cannot go east!\a");
-		}
-	}
-
-	private void GoWest(Room r)
-	{
-		if(r.HasWest())
-		{
-			aCol -= 1;
-			lastDirection = GO_EAST;
-		}
-		else
-		{
-			Console.WriteLine("You cannot go west!\a");
-		}
-	}
-
-	private void GetLamp(Room r)
-	{
-		if(r.HasLamp())
-		{
-			Console.WriteLine("You got the lamp!");
-			adventurer.SetLamp(true);
-			r.SetLamp(false);
-		}
-		else
-		{
-			Console.WriteLine("There is no lamp in this room.");
-		}
-	}
-
-	private void GetKey(Room r)
-	{
-		if(r.HasKey())
-		{
-			Console.WriteLine("You got the key!");
-			adventurer.SetKey(true);
-			r.SetKey(false);
-		}
-		else
-		{
-			Console.WriteLine("There is no key in this room.");
-		}
-	}
-
-	private void OpenChest(Room r)
-	{
-		if(r.HasChest())
-		{
-			if(adventurer.HasKey())
-			{
-				Console.WriteLine("You got the treasure!");
-				isChestOpen = true;
-			}
-			else
-			{
-				Console.WriteLine("You do not have the key!");
-			}
-		}
-		else
-		{
-			Console.WriteLine("There is no chest in this room.");
-		}
-	}
-
-	private void Quit()
-	{
-		Console.WriteLine("You quit the game!");
-		hasPlayerQuit = true;
-	}
+    private bool RetryMenu() {
+        if (hasQuit) return false;
+        Console.Write("\n¿Jugar de nuevo? (S/N): ");
+        return Console.ReadLine()?.ToUpper() == "S";
+    }
 }
